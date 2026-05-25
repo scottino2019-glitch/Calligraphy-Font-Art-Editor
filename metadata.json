@@ -1,0 +1,6 @@
+{
+  "name": "Calligraphy & Font Art Editor",
+  "description": "An interactive calligraphy design workspace. Select elegant script fonts, append decorative swashes, loops, and hearts, customize colors and spacing, and export high-resolution designs in SVG, PNG, or JPG formats.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
