@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Layer, CanvasBackground, Language } from '../types';
+import { Layer, CanvasBackground, Language, TextLayer } from '../types';
 import { TRANSLATIONS } from './Language';
 import { SWASH_PATHS } from './VectorPaths';
 import { Download, Copy, Check, FileCode, ImageIcon, Sparkles, X } from 'lucide-react';
@@ -22,8 +22,76 @@ export default function ExportModal({
   const [copied, setCopied] = useState(false);
   const t = TRANSLATIONS[lang];
 
+  // Helper to fetch and inline fonts as Base64 in CSS @font-face rules
+  const fetchAndInlineFontsForSVG = async (layersList: Layer[]): Promise<string> => {
+    const uniqueFonts = Array.from(
+      new Set(
+        layersList
+          .filter(l => l.type === 'text')
+          .map(l => (l as any).fontFamily)
+      )
+    );
+
+    if (uniqueFonts.length === 0) {
+      return '';
+    }
+
+    try {
+      let combinedCss = '';
+      
+      for (const font of uniqueFonts) {
+        try {
+          const cssUrl = `https://fonts.googleapis.com/css2?family=${font.replace(/ /g, '+')}&display=swap`;
+          const response = await fetch(cssUrl, {
+            headers: {
+              'Accept': 'text/css,*/*;q=0.1'
+            }
+          });
+          
+          if (!response.ok) continue;
+          let cssText = await response.text();
+          
+          const urlMatches = cssText.match(/url\((https:\/\/[^)]+)\)/g);
+          if (urlMatches) {
+            const uniqueUrls = Array.from(new Set(urlMatches.map(m => m.slice(4, -1))));
+            
+            for (const fontUrl of uniqueUrls) {
+              try {
+                const fontRes = await fetch(fontUrl);
+                if (!fontRes.ok) continue;
+                const fontBlob = await fontRes.blob();
+                
+                const base64 = await new Promise<string>((resolve, reject) => {
+                  const reader = new FileReader();
+                  reader.onloadend = () => {
+                    resolve(reader.result as string);
+                  };
+                  reader.onerror = () => reject('Error reading font data');
+                  reader.readAsDataURL(fontBlob);
+                });
+                
+                cssText = cssText.split(fontUrl).join(base64);
+              } catch (err) {
+                console.warn('Failed to inline font file:', fontUrl, err);
+              }
+            }
+          }
+          
+          combinedCss += cssText + '\n';
+        } catch (err) {
+          console.warn('Failed to inline font CSS for:', font, err);
+        }
+      }
+      
+      return combinedCss;
+    } catch (err) {
+      console.error('Inlining fonts failed, falling back to CDN imports:', err);
+      return '';
+    }
+  };
+
   // Helper to compile SVG XML String with embedded Google Fonts CSS
-  const generateSvgString = () => {
+  const generateSvgString = (includeText = true, inlinedFontStyles?: string) => {
     // Unique list of fonts used
     const uniqueFonts = Array.from(
       new Set(
@@ -37,9 +105,9 @@ export default function ExportModal({
       .map(f => `family=${f.replace(/ /g, '+')}`)
       .join('&');
 
-    const fontImportStyles = uniqueFonts.length > 0 
-      ? `@import url('https://fonts.googleapis.com/css2?${fontImportQuery}&amp;display=swap');`
-      : `@import url('https://fonts.googleapis.com/css2?family=Great+Vibes&amp;family=Sacramento&amp;family=Dancing+Script&amp;family=Alex+Brush&amp;family=Pinyon+Script&amp;family=Allura&amp;family=Monsieur+La+Doulaise&amp;family=Rochester&amp;family=Parisienne&amp;family=Arizonia&amp;family=Mrs+Saint+Delafield&amp;family=Reenie+Beanie&amp;display=swap');`;
+    const fontImportStyles = inlinedFontStyles || (uniqueFonts.length > 0 
+      ? `@import url('https://fonts.googleapis.com/css2?${fontImportQuery}&display=swap');`
+      : `@import url('https://fonts.googleapis.com/css2?family=Great+Vibes&family=Sacramento&family=Dancing+Script&family=Alex+Brush&family=Pinyon+Script&family=Allura&family=Monsieur+La+Doulaise&family=Rochester&family=Parisienne&family=Arizonia&family=Mrs+Saint+Delafield&family=Reenie+Beanie&display=swap');`);
 
     // 1. Build Gradient and Texture definitions
     let defsContent = `
@@ -95,6 +163,7 @@ export default function ExportModal({
     // Convert SVG layers to strings
     const layersStrings = layers
       .filter(l => l.opacity > 0)
+      .filter(l => includeText || l.type !== 'text')
       .map(layer => {
         let content = '';
         if (layer.type === 'text') {
@@ -228,12 +297,14 @@ export default function ExportModal({
     // Combine everything into standard SVG XML document
     return `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 700" width="1000" height="700">
-  <style>
+  <style type="text/css">
+    <![CDATA[
     ${fontImportStyles}
     text {
       text-anchor: middle;
       dominant-baseline: middle;
     }
+    ]]>
   </style>
   ${defsContent}
   
@@ -245,19 +316,23 @@ export default function ExportModal({
 </svg>`;
   };
 
-  const handleCopySvg = () => {
-    const svgStr = generateSvgString();
+  const handleCopySvg = async () => {
+    setDownloading(true);
+    const inlinedFonts = await fetchAndInlineFontsForSVG(layers);
+    const svgStr = generateSvgString(true, inlinedFonts);
     navigator.clipboard.writeText(svgStr);
     setCopied(true);
+    setDownloading(false);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     setDownloading(true);
     const fileName = `calligraphy_art_${Date.now()}`;
-    const svgStr = generateSvgString();
 
     if (format === 'svg') {
+      const inlinedFonts = await fetchAndInlineFontsForSVG(layers);
+      const svgStr = generateSvgString(true, inlinedFonts);
       // Direct text assembly download
       const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
       const url = URL.createObjectURL(blob);
@@ -271,6 +346,8 @@ export default function ExportModal({
       setDownloading(false);
     } else {
       // PNG vs JPG Canvas render pipeline
+      // We generate the SVG background *excluding* text layers, then draw text layers directly using active fonts
+      const svgStr = generateSvgString(false);
       const img = new Image();
       // Safe base64 encode SVG including Unicode
       const svgBlob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
@@ -295,6 +372,43 @@ export default function ExportModal({
             }
             
             ctx.drawImage(img, 0, 0, 3000, 2100);
+
+            // Now, manually draw text layers using standard 2D Canvas context
+            // Since the browser page has already loaded these Google Fonts,
+            // they render perfectly with zero sandboxing/CORS block!
+            layers
+              .filter(layer => layer.type === 'text' && layer.opacity > 0)
+              .forEach(layer => {
+                const textLayer = layer as TextLayer;
+                ctx.save();
+                ctx.globalAlpha = textLayer.opacity;
+                
+                // Translate & rotate coordinates for 3x Canvas scale
+                const targetX = textLayer.x * 3;
+                const targetY = textLayer.y * 3;
+                ctx.translate(targetX, targetY);
+                ctx.rotate((textLayer.rotation * Math.PI) / 180);
+
+                // Setup typography dimensions and styles
+                const styleStr = textLayer.italic ? 'italic ' : '';
+                const weightStr = textLayer.bold ? 'bold ' : '';
+                const fontSize = textLayer.fontSize * 3 * textLayer.scale;
+                
+                ctx.font = `${styleStr}${weightStr}${fontSize}px "${textLayer.fontFamily}", cursive, sans-serif`;
+                ctx.fillStyle = textLayer.color;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                
+                // Adjust letter spacing if supported
+                const letterSpacing = textLayer.letterSpacing * 3 * textLayer.scale;
+                if ('letterSpacing' in ctx) {
+                  (ctx as any).letterSpacing = `${letterSpacing}px`;
+                }
+
+                ctx.fillText(textLayer.text, 0, 0);
+                ctx.restore();
+              });
+
             const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
             const dataUrl = canvas.toDataURL(mimeType, format === 'jpeg' ? 0.95 : undefined);
             
@@ -409,7 +523,7 @@ export default function ExportModal({
             className={`flex items-center gap-2 px-6 py-2.5 rounded text-xs font-black text-brand-bg bg-brand-accent hover:bg-white active:scale-95 disabled:opacity-50 transition-all shadow-[0_0_15px_rgba(204,255,0,0.2)] uppercase tracking-tight`}
           >
             <Download size={16} />
-            {downloading ? 'Rendering...' : t.downloadBtn}
+            {downloading ? (format === 'svg' ? 'Embedding Fonts...' : 'Rendering...') : t.downloadBtn}
           </button>
         </div>
       </div>
